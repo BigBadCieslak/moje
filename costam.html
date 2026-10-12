@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Parówkowy Kartel — GTA 2D</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101319;color:white;font:14px monospace;overflow:hidden}
+canvas{display:block;width:100vw;height:100vh;image-rendering:pixelated}
+#hud{position:fixed;top:12px;left:12px;background:#111e;padding:12px;
+border:2px solid #ff4bc8;line-height:1.7;pointer-events:none}
+#help{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);
+background:#111e;border:2px solid #50e8d0;padding:9px;text-align:center;
+max-width:95%;font-size:12px}
+#msg{color:#ffe66d}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+ <b style="color:#ff4bc8">PARÓWKOWY KARTEL</b><br>
+ ❤️ Zdrowie: <span id="hp">100</span><br>
+ 💵 Kasa: $<span id="cash">500</span><br>
+ 🔫 Broń: <span id="weapon">Brak</span><br>
+ 💥 Amunicja: <span id="ammo">0</span><br>
+ ⭐ Pościg: <span id="stars">☆☆☆☆☆</span><br>
+ 🚗 Pojazd: <span id="car">Nie</span><br>
+ <span id="msg">Witaj w Bułkowym Mieście!</span>
+</div>
+<div id="help">
+ WASD — ruch/jazda · E — auto · B — kup broń (200$) ·
+ LPM — strzał · R — przeładuj · SHIFT — sprint
+</div>
+<script>
+const cv=document.querySelector("#game"),ctx=cv.getContext("2d");
+function resize(){cv.width=innerWidth;cv.height=innerHeight}
+resize();addEventListener("resize",resize);
+const W=2400,H=1800,rand=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const player={x:1200,y:900,hp:100,cash:500,weapon:false,ammo:12,
+ maxAmmo:12,reload:0,angle:0};
+let wanted=0,carIndex=-1,frame=0,lastCrime=0,msgTimer=0;
+let msg="Znajdź sklep z bronią!";
+const keys={},bullets=[],buildings=[],foods=[],cars=[],money=[];
+let mouse={x:innerWidth/2,y:innerHeight/2,down:false};
+function say(s){msg=s;msgTimer=240;document.querySelector("#msg").textContent=s}
+addEventListener("keydown",e=>{
+ const k=e.key.toLowerCase();keys[k]=true;
+ if([" ","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key))e.preventDefault();
+ if(e.repeat)return;
+ if(k==="e")interact();
+ if(k==="b")buyWeapon();
+ if(k==="r")reload();
+});
+addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+cv.addEventListener("mousemove",e=>{mouse.x=e.clientX;mouse.y=e.clientY});
+cv.addEventListener("mousedown",e=>{if(e.button===0)mouse.down=true});
+addEventListener("mouseup",e=>{if(e.button===0)mouse.down=false});
+const rect=(a,b)=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
+function blocked(x,y,r=10){
+ return buildings.some(b=>x+r>b.x&&x-r<b.x+b.w&&y+r>b.y&&y-r<b.y+b.h);
+}
+function moveEntity(o,dx,dy,r=10){
+ let nx=clamp(o.x+dx,r,W-r),ny=clamp(o.y+dy,r,H-r);
+ if(!blocked(nx,o.y,r))o.x=nx;
+ if(!blocked(o.x,ny,r))o.y=ny;
+}
+for(let x=100;x<W-100;x+=250)for(let y=100;y<H-100;y+=250){
+ if(Math.random()<.15)continue;
+ buildings.push({x:x+rand(-15,15),y:y+rand(-15,15),
+ w:rand(90,150),h:rand(90,145),
+ color:["#ad6a62","#737e91","#b4a078","#62917b"][Math.floor(Math.random()*4)]});
+}
+function freePos(){
+ for(let n=0;n<100;n++){
+  const p={x:rand(35,W-35),y:rand(35,H-35)};
+  if(!blocked(p.x,p.y,20))return p;
+ }
+ return {x:200,y:200};
+}
+for(let i=0;i<65;i++){
+ const p=freePos();
+ foods.push({...p,type:["🌭","🥔","🍞"][i%3],phase:rand(0,6.28),
+ speed:rand(.25,.65),armed:Math.random()<.16,
+ hostile:false,cool:rand(20,120),hp:100});
+}
+for(let i=0;i<24;i++){
+ const p=freePos();
+ cars.push({...p,a:Math.random()*6.28,v:0,
+ color:["#22d9cc","#ed4db6","#e8d85a","#eee","#d45e48"][i%5],
+ police:false,occupied:false});
+}
+for(let i=0;i<3;i++){
+ const p=freePos();
+ cars.push({...p,a:0,v:0,color:"#f4f4f4",police:true,occupied:false});
+}
+const shop={x:1350,y:780,w:64,h:64};
+function near(a,b,r){return Math.hypot(a.x-b.x,a.y-b.y)<r}
+function interact(){
+ if(carIndex>=0){
+  cars[carIndex].occupied=false;
+  player.x=cars[carIndex].x+30;player.y=cars[carIndex].y+30;
+  carIndex=-1;say("Wysiadłeś z auta.");return;
+ }
+ let best=-1,d=55;
+ cars.forEach((c,i)=>{let q=Math.hypot(c.x-player.x,c.y-player.y);
+ if(q<d){d=q;best=i}});
+ if(best<0){say("Podejdź bliżej samochodu!");return}
+ carIndex=best;cars[best].occupied=true;
+ cars[best].v=0;wanted=Math.min(5,wanted+1);
+ say(cars[best].police?"Ukradłeś radiowóz!":"Auto skradzione!");
+}
+function buyWeapon(){
+ if(!near(player,shop,105)){say("Podejdź do sklepu z bronią!");return}
+ if(player.weapon){say("Masz już pistolet.");return}
+ if(player.cash<200){say("Za mało kasy! Potrzebujesz 200$.");return}
+ player.cash-=200;player.weapon=true;player.ammo=12;
+ say("Kupiono pistolet! LPM strzela, R przeładowuje.");
+}
+function reload(){
+ if(!player.weapon)return say("Najpierw kup broń!");
+ if(player.reload>0)return;
+ player.reload=75;say("Przeładowywanie...");
+}
+let shotCooldown=0;
+function shoot(){
+ if(!player.weapon)return;
+ if(shotCooldown>0)return;
+ if(player.reload>0)return;
+ if(player.ammo<=0){say("Brak amunicji! Naciśnij R.");return}
+ player.ammo--;shotCooldown=14;
+ const cam=camera();
+ const tx=mouse.x+cam.x,ty=mouse.y+cam.y;
+ const a=Math.atan2(ty-player.y,tx-player.x);
+ bullets.push({x:player.x+Math.cos(a)*15,y:player.y+Math.sin(a)*15,
+ vx:Math.cos(a)*10,vy:Math.sin(a)*10,life:65,owner:"player"});
+ wanted=Math.min(5,wanted+0.15);
+ lastCrime=performance.now();
+ foods.forEach(f=>{
+  if(Math.hypot(f.x-player.x,f.y-player.y)<260&&f.armed){
+   f.hostile=true;
+  }
+ });
+}
+function npcShoot(f){
+ if(f.cool>0)return;
+ f.cool=rand(65,115);
+ const a=Math.atan2(player.y-f.y,player.x-f.x)+rand(-.15,.15);
+ bullets.push({x:f.x,y:f.y,vx:Math.cos(a)*5,vy:Math.sin(a)*5,
+ life:100,owner:"npc"});
+}
+function camera(){
+ return {x:clamp(player.x-cv.width/2,0,W-cv.width),
+ y:clamp(player.y-cv.height/2,0,H-cv.height)};
+}
+function update(){
+ frame++;
+ if(msgTimer>0)msgTimer--;
+ if(shotCooldown>0)shotCooldown--;
+ if(player.reload>0){
+  player.reload--;
+  if(player.reload===0){player.ammo=player.maxAmmo;say("Broń przeładowana!")}
+ }
+ const inCar=carIndex>=0;
+ if(inCar){
+  const c=cars[carIndex];
+  if(keys.w||keys.arrowup)c.v=Math.min(c.v+.12,5.5);
+  else if(keys.s||keys.arrowdown)c.v=Math.max(c.v-.16,-2.5);
+  else c.v*=.985;
+  if(keys.a||keys.arrowleft)c.a-=.045*(Math.abs(c.v)/3+.25)*Math.sign(c.v||1);
+  if(keys.d||keys.arrowright)c.a+=.045*(Math.abs(c.v)/3+.25)*Math.sign(c.v||1);
+  const ox=c.x,oy=c.y;
+  moveEntity(c,Math.cos(c.a)*c.v,Math.sin(c.a)*c.v,17);
+  if(c.x===ox&&c.y===oy&&Math.abs(c.v)>1){
+   c.v*=-.3;player.hp=Math.max(0,player.hp-1);
+   say("BUM! Uderzyłeś w przeszkodę!");
+  }
+  player.x=c.x;player.y=c.y;
+ }else{
+  let dx=0,dy=0;
+  if(keys.w||keys.arrowup)dy--;
+  if(keys.s||keys.arrowdown)dy++;
+  if(keys.a||keys.arrowleft)dx--;
+  if(keys.d||keys.arrowright)dx++;
+  if(dx||dy){
+   const l=Math.hypot(dx,dy),s=keys.shift?4:2.6;
+   moveEntity(player,dx/l*s,dy/l*s,10);
+  }
+ }
+ const cam=camera();
+ player.angle=Math.atan2(mouse.y+cam.y-player.y,mouse.x+cam.x-player.x);
+ if(mouse.down)shoot();
+
+ foods.forEach(f=>{
+  f.phase+=.025;
+  if(f.hostile){
+   const d=Math.hypot(player.x-f.x,player.y-f.y);
+   if(d<330){
+    if(d>90){
+     const dx=(player.x-f.x)/d,dy=(player.y-f.y)/d;
+     const nx=f.x+dx*.65,ny=f.y+dy*.65;
+     if(!blocked(nx,ny,10)){f.x=nx;f.y=ny}
+    }
+    if(d<280)npcShoot(f);
+   }else f.hostile=false;
+  }else{
+   const nx=f.x+Math.sin(f.phase)*f.speed;
+   const ny=f.y+Math.cos(f.phase*.7)*f.speed;
+   if(!blocked(nx,ny,9)){f.x=nx;f.y=ny}
+   if(f.armed&&wanted>=2&&Math.hypot(player.x-f.x,player.y-f.y)<180)
+    f.hostile=true;
+  }
+  f.cool=Math.max(0,f.cool-1);
+  if(near(player,f,22)){
+   player.cash+=10;f.x=rand(40,W-40);f.y=rand(40,H-40);
+   say("Zarobiłeś 10$ na handlu jedzeniem!");
+  }
+ });
+ bullets.forEach((b,i)=>{
+  b.x+=b.vx;b.y+=b.vy;b.life--;
+  if(blocked(b.x,b.y,3))b.life=0;
+  if(b.owner==="player"){
+   foods.forEach(f=>{
+    if(f.hp>0&&near(b,f,17)){
+     b.life=0;f.hp-=50;f.hostile=true;
+     if(f.hp<=0){player.cash+=25;say("Pokonano gangstera! +25$")}
+    }
+   });
+  }else if(near(b,player,12)){
+   b.life=0;player.hp-=8;
+  }
+ });
+ for(let i=bullets.length-1;i>=0;i--)if(bullets[i].life<=0)bullets.splice(i,1);
+ cars.forEach(c=>{
+  if(c.police&&wanted>0&&!c.occupied){
+   const d=Math.hypot(player.x-c.x,player.y-c.y);
+   if(d>30){
+    const a=Math.atan2(player.y-c.y,player.x-c.x);
+    const nx=c.x+Math.cos(a)*(.6+wanted*.18);
+    const ny=c.y+Math.sin(a)*(.6+wanted*.18);
+    if(!blocked(nx,ny,16)){c.x=nx;c.y=ny;c.a=a}
+   }else if(frame%30===0)player.hp-=2;
+  }
+ });
+ if(player.hp<=0){
+  player.hp=100;player.cash=Math.max(0,player.cash-200);
+  player.x=1200;player.y=900;wanted=0;
+  if(carIndex>=0)cars[carIndex].occupied=false;
+  carIndex=-1;say("Areszt! Straciłeś 200$.");
+ }
+ document.querySelector("#hp").textContent=Math.ceil(player.hp);
+ document.querySelector("#cash").textContent=player.cash;
+ document.querySelector("#weapon").textContent=player.weapon?"Pistolet":"Brak";
+ document.querySelector("#ammo").textContent=player.weapon?
+ (player.reload>0?"Ładowanie...":player.ammo+"/12"):"0";
+ document.querySelector("#stars").textContent="★".repeat(Math.ceil(wanted))+"☆".repeat(5-Math.ceil(wanted));
+ document.querySelector("#car").textContent=carIndex>=0?"TAK":"NIE";
+}
+function drawCar(c){
+ ctx.save();ctx.translate(c.x,c.y);ctx.rotate(c.a);
+ ctx.fillStyle="#111";ctx.fillRect(-19,-12,40,27);
+ ctx.fillStyle=c.color;ctx.fillRect(-22,-15,44,30);
+ ctx.fillStyle="#253344";ctx.fillRect(-10,-11,21,22);
+ ctx.fillStyle="#b8f3ff";ctx.fillRect(-8,-10,16,7);
+ ctx.fillStyle="#ffe9a1";ctx.fillRect(18,-10,4,6);ctx.fillRect(18,5,4,6);
+ if(c.police){
+  ctx.fillStyle=frame%20<10?"red":"#38aaff";ctx.fillRect(-8,-18,16,5);
+ }
+ ctx.restore();
+}
+function render(){
+ const cam=camera();
+ ctx.fillStyle="#477c54";ctx.fillRect(0,0,cv.width,cv.height);
+ ctx.save();ctx.translate(-cam.x,-cam.y);
+ // Chodniki i drogi
+ for(let x=0;x<W;x+=250){
+  ctx.fillStyle="#77777d";ctx.fillRect(x,0,100,H);
+  ctx.fillStyle="#d5c49f";ctx.fillRect(x-6,0,6,H);ctx.fillRect(x+100,0,6,H);
+  ctx.strokeStyle="#e9d68a";ctx.lineWidth=2;ctx.setLineDash([18,18]);
+  ctx.beginPath();ctx.moveTo(x+50,0);ctx.lineTo(x+50,H);ctx.stroke();ctx.setLineDash([]);
+ }
+ for(let y=0;y<H;y+=250){
+  ctx.fillStyle="#77777d";ctx.fillRect(0,y,W,100);
+  ctx.fillStyle="#d5c49f";ctx.fillRect(0,y-6,W,6);ctx.fillRect(0,y+100,W,6);
+ }
+ buildings.forEach(b=>{
+  ctx.fillStyle="#0005";ctx.fillRect(b.x+8,b.y+8,b.w,b.h);
+  ctx.fillStyle=b.color;ctx.fillRect(b.x,b.y,b.w,b.h);
+  ctx.fillStyle="#ffffff30";ctx.fillRect(b.x+7,b.y+7,b.w-14,9);
+  ctx.fillStyle="#303443";
+  for(let xx=b.x+14;xx<b.x+b.w-8;xx+=26)
+   for(let yy=b.y+22;yy<b.y+b.h-8;yy+=28)ctx.fillRect(xx,yy,12,12);
+ });
+ // Sklep
+ ctx.fillStyle="#222";ctx.fillRect(shop.x-5,shop.y-5,74,74);
+ ctx.fillStyle="#b62b8b";ctx.fillRect(shop.x,shop.y,64,64);
+ ctx.fillStyle="#fff";ctx.font="24px monospace";ctx.fillText("🔫",shop.x+17,shop.y+30);
+ ctx.font="10px monospace";ctx.fillText("SKLEP",shop.x+9,shop.y+49);
+ foods.forEach(f=>{
+  if(f.hp<=0)return;
+  ctx.font="28px serif";ctx.textAlign="center";ctx.textBaseline="middle";
+  ctx.fillText(f.type,f.x,f.y);
+  if(f.armed){
+   ctx.font="13px monospace";ctx.fillStyle=f.hostile?"#ff3030":"#ffdf67";
+   ctx.fillText(f.hostile?"!":"🔫",f.x,f.y-23);
+  }
+ });
+ cars.forEach(drawCar);
+ bullets.forEach(b=>{
+  ctx.fillStyle=b.owner==="npc"?"#ff5533":"#fff18b";
+  ctx.beginPath();ctx.arc(b.x,b.y,3,0,7);ctx.fill();
+ });
+ if(carIndex<0){
+  ctx.fillStyle="#0006";ctx.beginPath();ctx.ellipse(player.x,player.y+8,11,6,0,0,7);ctx.fill();
+  ctx.fillStyle="#e9c08a";ctx.beginPath();ctx.arc(player.x,player.y-5,8,0,7);ctx.fill();
+  ctx.fillStyle="#42dec2";ctx.fillRect(player.x-8,player.y+1,16,13);
+  ctx.fillStyle="#222";ctx.fillRect(player.x-7,player.y+12,5,7);ctx.fillRect(player.x+3,player.y+12,5,7);
+  if(player.weapon){
+   ctx.save();ctx.translate(player.x,player.y+4);ctx.rotate(player.angle);
+   ctx.fillStyle="#222";ctx.fillRect(4,-3,17,6);ctx.restore();
+  }
+ }
+ ctx.restore();
+ // Minimapa
+ const mw=155,mh=110,mx=cv.width-mw-14,my=14;
+ ctx.fillStyle="#101e";ctx.fillRect(mx,my,mw,mh);
+ ctx.strokeStyle="#ff4bc8";ctx.lineWidth=2;ctx.strokeRect(mx,my,mw,mh);
+ ctx.fillStyle="#aaa";
+ for(let i=1;i<9;i++)ctx.fillRect(mx+i*mw/9,my,1,mh);
+ for(let i=1;i<6;i++)ctx.fillRect(mx,my+i*mh/6,mw,1);
+ ctx.fillStyle="#52ffe1";ctx.beginPath();
+ ctx.arc(mx+player.x/W*mw,my+player.y/H*mh,4,0,7);ctx.fill();
+ ctx.fillStyle="#ffdf50";ctx.fillRect(mx+shop.x/W*mw-2,my+shop.y/H*mh-2,5,5);
+ ctx.fillStyle="#ff4040";
+ cars.filter(c=>c.police&&wanted>0).forEach(c=>{
+  ctx.fillRect(mx+c.x/W*mw-2,my+c.y/H*mh-2,4,4)
+ });
+ if(msgTimer>0)document.querySelector("#msg").textContent=msg;
+}
+function loop(){update();render();requestAnimationFrame(loop)}
+loop();
+</script>
+</body>
+</html>
